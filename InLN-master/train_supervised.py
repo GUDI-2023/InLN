@@ -1,3 +1,4 @@
+ # The code is implemented based on tgn, refer to https://github.com/twitter-research/tgn
 import math
 import logging
 import time
