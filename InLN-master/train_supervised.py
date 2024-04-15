@@ -1,4 +1,3 @@
-### The code is implemented based on tgn, refer to https://github.com/twitter-research/tgn
 import math
 import logging
 import time
@@ -92,6 +91,7 @@ TIME_DIM = args.time_dim
 USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
+LAMBDA1 = 0.01
 
 Path("./saved_models/").mkdir(parents=True, exist_ok=True)
 Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
@@ -115,6 +115,8 @@ ch.setFormatter(formatter)
 logger.addHandler(fh)
 logger.addHandler(ch)
 logger.info(args)
+
+criterion = torch.nn.BCELoss()
 
 full_data, node_features, edge_features, train_data, val_data, test_data = \
   get_data_node_classification(DATA, use_validation=args.use_validation)
@@ -171,6 +173,7 @@ for i in range(args.n_runs):
   decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=args.lr)
   decoder = decoder.to(device)
   decoder_loss_criterion = torch.nn.BCELoss()
+  mse_loss = torch.nn.MSELoss()
 
   val_aucs = []
   train_losses = []
@@ -201,12 +204,26 @@ for i in range(args.n_runs):
 
       decoder_optimizer.zero_grad()
       with torch.no_grad():
-        source_embedding, destination_embedding, _ = tgn.compute_temporal_embeddings(sources_batch,
+        source_embedding, destination_embedding, _ = InLN.compute_temporal_embeddings(sources_batch,
                                                                                      destinations_batch,
                                                                                      destinations_batch,
                                                                                      timestamps_batch,
                                                                                      edge_idxs_batch,
                                                                                      NUM_NEIGHBORS)
+
+      if np.random.random() > 0.67:
+          _, negatives_batch = train_rand_sampler.sample(size)
+
+          with torch.no_grad():
+              pos_label = torch.ones(size, dtype=torch.float, device=device)
+              neg_label = torch.zeros(size, dtype=torch.float, device=device)
+
+
+      pos_prob, neg_prob = InLN.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,
+                                                          timestamps_batch, edge_idxs_batch, source_embedding, destination_embedding,
+                                                          NUM_NEIGHBORS)
+
+      loss += mse_loss(source_embedding, destination_embedding)+LAMBDA1*[criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)]
 
       labels_batch_torch = torch.from_numpy(labels_batch).float().to(device)
       pred = decoder(source_embedding).sigmoid()
@@ -216,7 +233,7 @@ for i in range(args.n_runs):
       loss += decoder_loss.item()
     train_losses.append(loss / num_batch)
 
-    val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
+    val_auc = eval_node_classification(InLN, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
                                        n_neighbors=NUM_NEIGHBORS)
     val_aucs.append(val_auc)
 
@@ -243,7 +260,7 @@ for i in range(args.n_runs):
     logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
     decoder.eval()
 
-    test_auc = eval_node_classification(tgn, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
+    test_auc = eval_node_classification(InLN, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
                                         n_neighbors=NUM_NEIGHBORS)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
